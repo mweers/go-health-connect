@@ -8,9 +8,9 @@ import (
 	"github.com/goccy/go-json"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -29,7 +29,7 @@ func main() {
 	r.GET("/", handleMain)
 	r.GET("/login", handleGoogleLogin)
 	r.GET("/callback", handleGoogleCallback)
-	r.GET("/day/:date", handleGetData)
+	r.GET("/data/:date", handleGetData)
 
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
@@ -62,33 +62,75 @@ func handleGoogleCallback(c *gin.Context) {
 }
 
 func handleGetData(c *gin.Context) {
-	accessToken := c.Query("access_token")
+	dateStr := c.Param("date")
 
-	// Check if the access token is present
+	layout, rangeType := getDateFormat(dateStr)
+	if layout == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format"})
+		return
+	}
+
+	accessToken := c.Query("access_token")
 	if accessToken == "" {
-		// Redirect to login if no access token is found
-		// Pass the requested date as a state parameter
-		requestedDate := c.Param("date")
-		loginURL := fmt.Sprintf("/login?state=%s", requestedDate)
+		loginURL := fmt.Sprintf("/login?state=%s", dateStr)
 		c.Redirect(http.StatusTemporaryRedirect, loginURL)
 		return
 	}
 
-	date := c.Param("date")
-	startTime, endTime, err := getDateRange(date)
-	if err != nil {
-		c.AbortWithError(http.StatusBadRequest, err)
-		return
-	}
-
-	// Log the start and end time for debugging
-	log.Printf("Date: %s, Start Time: %d, End Time: %d\n", date, startTime, endTime)
-
-	tokenSource := googleOauthConfig.TokenSource(context.Background(), &oauth2.Token{
-		AccessToken: accessToken,
-	})
+	tokenSource := googleOauthConfig.TokenSource(context.Background(), &oauth2.Token{AccessToken: accessToken})
 	httpClient := oauth2.NewClient(context.Background(), tokenSource)
 
+	var totalSteps int
+	var err error
+
+	switch rangeType {
+	case "year":
+		// Special handling for year-long data
+		year, _ := strconv.Atoi(dateStr)
+		loc, _ := time.LoadLocation("America/Chicago") // Adjust timezone as needed
+		for month := 1; month <= 12; month++ {
+			startOfMonth := time.Date(year, time.Month(month), 1, 0, 0, 0, 0, loc)
+			endOfMonth := startOfMonth.AddDate(0, 1, 0).Add(-time.Millisecond)
+			startMillis := startOfMonth.UnixNano() / int64(time.Millisecond)
+			endMillis := endOfMonth.UnixNano() / int64(time.Millisecond)
+			monthlySteps, err := fetchSteps(httpClient, startMillis, endMillis)
+			if err != nil {
+				log.Printf("Error fetching steps for month %d: %s\n", month, err)
+				continue // Skip this month if there's an error
+			}
+			totalSteps += monthlySteps
+		}
+	case "day", "month":
+		parsedDate, _ := time.Parse(layout, dateStr)
+		startTime, endTime := getRange(parsedDate, rangeType)
+		totalSteps, err = fetchSteps(httpClient, startTime, endTime)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching steps"})
+			return
+		}
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid range type"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{rangeType: dateStr, "steps": totalSteps})
+}
+
+func getRange(date time.Time, rangeType string) (int64, int64) {
+	switch rangeType {
+	case "day":
+		start := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
+		end := start.AddDate(0, 0, 1).Add(-time.Millisecond)
+		return start.UnixNano() / int64(time.Millisecond), end.UnixNano() / int64(time.Millisecond)
+	case "month":
+		start := time.Date(date.Year(), date.Month(), 1, 0, 0, 0, 0, date.Location())
+		end := start.AddDate(0, 1, 0).Add(-time.Millisecond)
+		return start.UnixNano() / int64(time.Millisecond), end.UnixNano() / int64(time.Millisecond)
+	default:
+		return 0, 0
+	}
+}
+
+func fetchSteps(client *http.Client, startTime, endTime int64) (int, error) {
 	requestBody, err := json.Marshal(map[string]interface{}{
 		"aggregateBy": []map[string]string{
 			{
@@ -97,69 +139,33 @@ func handleGetData(c *gin.Context) {
 			},
 		},
 		"bucketByTime": map[string]int64{
-			"durationMillis": 86400000,
+			"durationMillis": 86400000, // Aggregate by day
 		},
 		"startTimeMillis": startTime,
 		"endTimeMillis":   endTime,
 	})
 	if err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
+		return 0, err
 	}
-
-	// Log the request body for debugging
-	log.Printf("Request Body: %s\n", string(requestBody))
 
 	req, err := http.NewRequest("POST", "https://www.googleapis.com/fitness/v1/users/me/dataset:aggregate", bytes.NewBuffer(requestBody))
 	if err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json; encoding=utf-8")
 
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
+		return 0, err
 	}
 	defer resp.Body.Close()
 
-	// Read the response for debugging
-	respBody, _ := io.ReadAll(resp.Body)
-	log.Println("Response from Google Fit API: ", string(respBody))
-
-	// Reset the response body for decoding
-	resp.Body = io.NopCloser(bytes.NewBuffer(respBody))
-
 	var responseData GoogleFitAPIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&responseData); err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
+		return 0, err
 	}
 
-	steps := extractSteps(responseData)
-	c.JSON(http.StatusOK, gin.H{"date": date, "steps": steps})
-}
-
-func getDateRange(dateStr string) (int64, int64, error) {
-	layout := "2006-01-02"
-	loc, err := time.LoadLocation("America/Chicago") // Central Time Zone (Oklahoma)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to load location: %v", err)
-	}
-
-	parsedDate, err := time.ParseInLocation(layout, dateStr, loc)
-	if err != nil {
-		return 0, 0, fmt.Errorf("invalid date format: %v", err)
-	}
-
-	startOfDay := time.Date(parsedDate.Year(), parsedDate.Month(), parsedDate.Day(), 0, 0, 0, 0, loc)
-	endOfDay := startOfDay.AddDate(0, 0, 1).Add(-time.Millisecond)
-
-	startMillis := startOfDay.UnixNano() / int64(time.Millisecond)
-	endMillis := endOfDay.UnixNano() / int64(time.Millisecond)
-
-	return startMillis, endMillis, nil
+	return extractSteps(responseData), nil
 }
 
 type GoogleFitAPIResponse struct {
@@ -186,4 +192,16 @@ func extractSteps(data GoogleFitAPIResponse) int {
 		}
 	}
 	return totalSteps
+}
+
+func getDateFormat(dateStr string) (string, string) {
+	if len(dateStr) == 4 {
+		return "2006", "year"
+	} else if len(dateStr) == 7 {
+		return "2006-01", "month"
+	} else if len(dateStr) == 10 {
+		return "2006-01-02", "day"
+	} else {
+		return "", ""
+	}
 }
