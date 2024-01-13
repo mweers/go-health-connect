@@ -29,7 +29,7 @@ func main() {
 	r.GET("/", handleMain)
 	r.GET("/login", handleGoogleLogin)
 	r.GET("/callback", handleGoogleCallback)
-	r.GET("/data/:date", handleGetData)
+	r.GET("/data/:date", handleData)
 
 	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("Failed to run server: %v", err)
@@ -61,10 +61,10 @@ func handleGoogleCallback(c *gin.Context) {
 	c.Redirect(http.StatusFound, fmt.Sprintf("/day/%s?access_token=%s", state, token.AccessToken))
 }
 
-func handleGetData(c *gin.Context) {
+func handleData(c *gin.Context) {
 	dateStr := c.Param("date")
 
-	layout, rangeType := getDateFormat(dateStr)
+	layout, dateType := getDateFormat(dateStr)
 	if layout == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format"})
 		return
@@ -83,7 +83,7 @@ func handleGetData(c *gin.Context) {
 	var totalSteps int
 	var err error
 
-	switch rangeType {
+	switch dateType {
 	case "year":
 		// Special handling for year-long data
 		year, _ := strconv.Atoi(dateStr)
@@ -102,7 +102,7 @@ func handleGetData(c *gin.Context) {
 		}
 	case "day", "month":
 		parsedDate, _ := time.Parse(layout, dateStr)
-		startTime, endTime := getRange(parsedDate, rangeType)
+		startTime, endTime := getRange(parsedDate, dateType)
 		totalSteps, err = fetchSteps(httpClient, startTime, endTime)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching steps"})
@@ -112,11 +112,11 @@ func handleGetData(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid range type"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{rangeType: dateStr, "steps": totalSteps})
+	c.JSON(http.StatusOK, gin.H{dateType: dateStr, "steps": totalSteps})
 }
 
-func getRange(date time.Time, rangeType string) (int64, int64) {
-	switch rangeType {
+func getRange(date time.Time, dateType string) (int64, int64) {
+	switch dateType {
 	case "day":
 		start := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 		end := start.AddDate(0, 0, 1).Add(-time.Millisecond)
