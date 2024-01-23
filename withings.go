@@ -9,19 +9,21 @@ import (
 	"github.com/gin-gonic/contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-json"
+	_ "github.com/goccy/go-json"
 	"golang.org/x/oauth2"
 	"log"
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
 var withingsOauthConfig = &oauth2.Config{
 	RedirectURL:  "http://localhost:8080/callbackWithings",
-	ClientID:     "fdb372f760c5543c30ded5b770af67d904b376559edabe2521bb74e7bd5e02e7",
-	ClientSecret: "8498abe0a56dc901ccdb6e5c5dbe5bb80185ec865a74e2718bf547b26f12a9c1",
-	Scopes:       []string{"user.metrics"}, // Set the required scopes
+	ClientID:     os.Getenv("WITHINGS_CLIENT_ID"),
+	ClientSecret: os.Getenv("WITHINGS_CLIENT_SECRET"),
+	Scopes:       []string{"user.metrics"},
 	Endpoint: oauth2.Endpoint{
 		AuthURL:  "https://account.withings.com/oauth2_user/authorize2",
 		TokenURL: "https://wbsapi.withings.net/v2/oauth2",

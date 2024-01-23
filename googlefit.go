@@ -9,13 +9,14 @@ import (
 	"google.golang.org/api/fitness/v1"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
 var googleOauthConfig = &oauth2.Config{
 	RedirectURL:  "http://localhost:8080/callback",
-	ClientID:     "404858114083-2rbidruv4j9f5vepkktju9lto6ahpt40.apps.googleusercontent.com",
-	ClientSecret: "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",
+	ClientID:     os.Getenv("GOOGLE_FIT_CLIENT_ID"),
+	ClientSecret: os.Getenv("GOOGLE_FIT_CLIENT_SECRET"),
 	Scopes:       []string{"https://www.googleapis.com/auth/fitness.activity.read"},
 	Endpoint:     google.Endpoint,
 }
